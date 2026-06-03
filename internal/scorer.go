@@ -6,17 +6,17 @@ const (
 )
 
 // ComputeFraudScore calcula a proporção de fraudes entre os vizinhos (0.0 a 1.0).
-func ComputeFraudScore(neighbors []Neighbor) float32 {
-	if len(neighbors) == 0 {
+func ComputeFraudScore(res KNNResult) float32 {
+	if res.Len == 0 {
 		return 0
 	}
 	fraudCount := 0
-	for _, n := range neighbors {
-		if n.Label == LabelFraud {
+	for i := 0; i < res.Len; i++ {
+		if res.Neighbors[i].Label == LabelFraud {
 			fraudCount++
 		}
 	}
-	return float32(fraudCount) / float32(len(neighbors))
+	return float32(fraudCount) / float32(res.Len)
 }
 
 // IsApproved retorna true se o score for menor que o threshold (0.6).

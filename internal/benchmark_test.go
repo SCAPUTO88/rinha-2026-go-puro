@@ -11,7 +11,11 @@ import (
 // BenchmarkEuclideanDistSq measures the scalar distance function.
 func BenchmarkEuclideanDistSq(b *testing.B) {
 	a := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
-	c := [VectorDimsPad]float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 1, 0, 1, 0.7, 0.95, 0, 0}
+	var c [VectorDimsPad]uint8
+	floats := []float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 1, 0, 1, 0.7, 0.95, 0, 0}
+	for i, v := range floats {
+		c[i] = QuantizeFloat32(v)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

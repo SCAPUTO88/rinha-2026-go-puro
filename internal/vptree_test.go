@@ -41,26 +41,32 @@ func TestVPTree_KNN_MatchesBruteForce_SmallDataset(t *testing.T) {
 		bfNeighbors := BruteForceKNN(&query, refs, 5)
 		vpNeighbors := tree.KNN(&query, 5)
 
-		if len(vpNeighbors) != len(bfNeighbors) {
+		if vpNeighbors.Len != len(bfNeighbors) {
 			t.Errorf("query[%d]: VP-Tree returned %d neighbors, brute force returned %d",
-				qi, len(vpNeighbors), len(bfNeighbors))
+				qi, vpNeighbors.Len, len(bfNeighbors))
 			continue
 		}
 
 		// Verify distances match (both use squared euclidean)
-		for i := range bfNeighbors {
-			if !approxEq32(vpNeighbors[i].DistSq, bfNeighbors[i].DistSq, 1e-4) {
+		for i := 0; i < vpNeighbors.Len; i++ {
+			vpN := vpNeighbors.Neighbors[i]
+			bfN := bfNeighbors[i]
+			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-4) {
 				t.Errorf("query[%d] neighbor[%d]: VP dist²=%.6f, BF dist²=%.6f",
-					qi, i, vpNeighbors[i].DistSq, bfNeighbors[i].DistSq)
+					qi, i, vpN.DistSq, bfN.DistSq)
 			}
-			if vpNeighbors[i].Label != bfNeighbors[i].Label {
+			if vpN.Label != bfN.Label {
 				t.Errorf("query[%d] neighbor[%d]: VP label=%d, BF label=%d",
-					qi, i, vpNeighbors[i].Label, bfNeighbors[i].Label)
+					qi, i, vpN.Label, bfN.Label)
 			}
 		}
 
 		// Verify fraud scores match
-		bfScore := ComputeFraudScore(bfNeighbors)
+		var bfRes KNNResult
+		copy(bfRes.Neighbors[:], bfNeighbors)
+		bfRes.Len = len(bfNeighbors)
+
+		bfScore := ComputeFraudScore(bfRes)
 		vpScore := ComputeFraudScore(vpNeighbors)
 		if bfScore != vpScore {
 			t.Errorf("query[%d]: VP score=%.1f, BF score=%.1f", qi, vpScore, bfScore)
@@ -90,20 +96,28 @@ func TestVPTree_KNN_MatchesBruteForce_ExampleDataset(t *testing.T) {
 	mismatchCount := 0
 	totalQueries := 0
 	for i := 0; i < len(refs); i += 10 {
-		query := refs[i].Vector
+		// Desquantiza para criar a query float32
+		var query [VectorDimsPad]float32
+		for d, v := range refs[i].Vector {
+			query[d] = DequantizeToFloat32(v)
+		}
 		totalQueries++
 
 		bfNeighbors := BruteForceKNN(&query, refs, 5)
 		vpNeighbors := tree.KNN(&query, 5)
 
-		if len(vpNeighbors) != len(bfNeighbors) {
-			t.Errorf("query[%d]: VP returned %d, BF returned %d", i, len(vpNeighbors), len(bfNeighbors))
+		if vpNeighbors.Len != len(bfNeighbors) {
+			t.Errorf("query[%d]: VP returned %d, BF returned %d", i, vpNeighbors.Len, len(bfNeighbors))
 			mismatchCount++
 			continue
 		}
 
 		// Compare fraud scores (the final output that matters)
-		bfScore := ComputeFraudScore(bfNeighbors)
+		var bfRes KNNResult
+		copy(bfRes.Neighbors[:], bfNeighbors)
+		bfRes.Len = len(bfNeighbors)
+
+		bfScore := ComputeFraudScore(bfRes)
 		vpScore := ComputeFraudScore(vpNeighbors)
 		if bfScore != vpScore {
 			t.Errorf("query[%d]: VP score=%.1f, BF score=%.1f", i, vpScore, bfScore)
@@ -111,10 +125,12 @@ func TestVPTree_KNN_MatchesBruteForce_ExampleDataset(t *testing.T) {
 		}
 
 		// Also verify distances match
-		for j := range bfNeighbors {
-			if !approxEq32(vpNeighbors[j].DistSq, bfNeighbors[j].DistSq, 1e-3) {
+		for j := 0; j < vpNeighbors.Len; j++ {
+			vpN := vpNeighbors.Neighbors[j]
+			bfN := bfNeighbors[j]
+			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-3) {
 				t.Errorf("query[%d] neighbor[%d]: VP dist²=%.6f, BF dist²=%.6f",
-					i, j, vpNeighbors[j].DistSq, bfNeighbors[j].DistSq)
+					i, j, vpN.DistSq, bfN.DistSq)
 				mismatchCount++
 				break
 			}
@@ -163,7 +179,8 @@ func TestVPTree_KNN_SpecExample_Legit(t *testing.T) {
 	approved := IsApproved(score)
 
 	t.Logf("Legit tx: fraud_score=%.1f, approved=%v", score, approved)
-	for i, n := range neighbors {
+	for i := 0; i < neighbors.Len; i++ {
+		n := neighbors.Neighbors[i]
 		label := "legit"
 		if n.Label == LabelFraud {
 			label = "fraud"
@@ -212,7 +229,8 @@ func TestVPTree_KNN_SpecExample_Fraud(t *testing.T) {
 	approved := IsApproved(score)
 
 	t.Logf("Fraud tx: fraud_score=%.1f, approved=%v", score, approved)
-	for i, n := range neighbors {
+	for i := 0; i < neighbors.Len; i++ {
+		n := neighbors.Neighbors[i]
 		label := "legit"
 		if n.Label == LabelFraud {
 			label = "fraud"
@@ -226,19 +244,24 @@ func TestVPTree_KNN_SpecExample_Fraud(t *testing.T) {
 }
 
 func TestVPTree_KNN_SingleElement(t *testing.T) {
+	var v [VectorDimsPad]uint8
+	rawFloats := []float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 0, 0.3, 0.05, 0, 0}
+	for i, f := range rawFloats {
+		v[i] = QuantizeFloat32(f)
+	}
 	refs := []Reference{
-		{Vector: [VectorDimsPad]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 0, 0.3, 0.05, 0, 0}, Label: LabelLegit},
+		{Vector: v, Label: LabelLegit},
 	}
 	tree := BuildVPTree(refs)
 
 	query := [VectorDimsPad]float32{0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0, 1, 0, 0.3, 0.05, 0, 0}
 	neighbors := tree.KNN(&query, 5)
 
-	if len(neighbors) != 1 {
-		t.Fatalf("expected 1 neighbor from single-element tree, got %d", len(neighbors))
+	if neighbors.Len != 1 {
+		t.Fatalf("expected 1 neighbor from single-element tree, got %d", neighbors.Len)
 	}
-	if neighbors[0].Label != LabelLegit {
-		t.Errorf("expected legit label, got %d", neighbors[0].Label)
+	if neighbors.Neighbors[0].Label != LabelLegit {
+		t.Errorf("expected legit label, got %d", neighbors.Neighbors[0].Label)
 	}
 }
 
@@ -249,7 +272,7 @@ func TestVPTree_KNN_EmptyDataset(t *testing.T) {
 	query := [VectorDimsPad]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 0, 0.3, 0.05, 0, 0}
 	neighbors := tree.KNN(&query, 5)
 
-	if len(neighbors) != 0 {
-		t.Errorf("expected 0 neighbors from empty tree, got %d", len(neighbors))
+	if neighbors.Len != 0 {
+		t.Errorf("expected 0 neighbors from empty tree, got %d", neighbors.Len)
 	}
 }

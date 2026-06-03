@@ -50,16 +50,18 @@ func TestSerializeDeserialize_SmallDataset(t *testing.T) {
 	origNeighbors := tree.KNN(&query, 5)
 	loadedNeighbors := loaded.KNN(&query, 5)
 
-	if len(origNeighbors) != len(loadedNeighbors) {
-		t.Fatalf("neighbor count mismatch: orig=%d, loaded=%d", len(origNeighbors), len(loadedNeighbors))
+	if origNeighbors.Len != loadedNeighbors.Len {
+		t.Fatalf("neighbor count mismatch: orig=%d, loaded=%d", origNeighbors.Len, loadedNeighbors.Len)
 	}
 
-	for i := range origNeighbors {
-		if !approxEq32(origNeighbors[i].DistSq, loadedNeighbors[i].DistSq, 1e-6) {
-			t.Errorf("neighbor[%d] dist: orig=%.6f, loaded=%.6f", i, origNeighbors[i].DistSq, loadedNeighbors[i].DistSq)
+	for i := 0; i < origNeighbors.Len; i++ {
+		origN := origNeighbors.Neighbors[i]
+		loadedN := loadedNeighbors.Neighbors[i]
+		if !approxEq32(origN.DistSq, loadedN.DistSq, 1e-4) {
+			t.Errorf("neighbor[%d] dist: orig=%.6f, loaded=%.6f", i, origN.DistSq, loadedN.DistSq)
 		}
-		if origNeighbors[i].Label != loadedNeighbors[i].Label {
-			t.Errorf("neighbor[%d] label: orig=%d, loaded=%d", i, origNeighbors[i].Label, loadedNeighbors[i].Label)
+		if origN.Label != loadedN.Label {
+			t.Errorf("neighbor[%d] label: orig=%d, loaded=%d", i, origN.Label, loadedN.Label)
 		}
 	}
 }

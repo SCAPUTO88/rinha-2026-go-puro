@@ -10,9 +10,7 @@ import (
 // Pool para reciclar o estado da busca KNN e evitar alocações no hot path.
 var knnStatePool = sync.Pool{
 	New: func() interface{} {
-		return &knnSearchState{
-			heap: make([]Neighbor, 0, 5),
-		}
+		return &knnSearchState{}
 	},
 }
 
@@ -27,7 +25,7 @@ type VPNode struct {
 // VPTree implementa busca exata K-NN com suporte a mmap zero-copy.
 type VPTree struct {
 	Nodes   []VPNode
-	Vectors [][VectorDimsPad]float32
+	Vectors [][VectorDimsPad]uint8
 	Labels  []uint8
 	Root    int32
 }
@@ -39,7 +37,7 @@ func BuildVPTree(refs []Reference) *VPTree {
 	}
 
 	// Split references into separate vectors and labels arrays
-	vectors := make([][VectorDimsPad]float32, len(refs))
+	vectors := make([][VectorDimsPad]uint8, len(refs))
 	labels := make([]uint8, len(refs))
 	for i := range refs {
 		vectors[i] = refs[i].Vector
@@ -193,31 +191,39 @@ func medianPartition(indices []int, dists []float32) float32 {
 	return dists[mid-1]
 }
 
-// KNN encontra os k-vizinhos mais próximos aplicando poda por desigualdade triangular.
-func (t *VPTree) KNN(query *[VectorDimsPad]float32, k int) []Neighbor {
+type KNNResult struct {
+	Neighbors [5]Neighbor
+	Len       int
+}
+
+// KNN encontra os k-vizinhos mais próximos aplicando poda por desigualdade triangular de forma zero-alloc.
+func (t *VPTree) KNN(query *[VectorDimsPad]float32, k int) KNNResult {
 	if t.Root == -1 {
-		return nil
+		return KNNResult{}
 	}
 
 	s := knnStatePool.Get().(*knnSearchState)
 	s.tree = t
 	s.query = query
 	s.k = k
-	s.heap = s.heap[:0]
+	s.len = 0
 	s.tau = float32(math.Inf(1))
+	s.heap = [5]Neighbor{} // zera heap anterior
 
 	s.search(t.Root)
 
-	// Copy results out before returning state to pool
-	result := make([]Neighbor, len(s.heap))
-	copy(result, s.heap)
+	// Copia o resultado
+	var result KNNResult
+	result.Neighbors = s.heap
+	result.Len = s.len
 
 	knnStatePool.Put(s)
 
-	// Sort ascending by distance for output
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].DistSq < result[j].DistSq
-	})
+	// Inverte a ordem de decrescente para crescente (para manter ordenação ascendente por distância)
+	for i := 0; i < result.Len/2; i++ {
+		j := result.Len - 1 - i
+		result.Neighbors[i], result.Neighbors[j] = result.Neighbors[j], result.Neighbors[i]
+	}
 
 	return result
 }
@@ -227,8 +233,36 @@ type knnSearchState struct {
 	tree  *VPTree
 	query *[VectorDimsPad]float32
 	k     int
-	heap  []Neighbor // Max-heap of K nearest (by DistSq)
-	tau   float32    // Current worst actual distance (not squared)
+	heap  [5]Neighbor // Array fixo
+	len   int
+	tau   float32     // Worst actual distance (not squared)
+}
+
+func (s *knnSearchState) addNeighbor(distSq float32, label uint8) {
+	if s.len < 5 {
+		// Insere mantendo ordenado decrescentemente por DistSq
+		s.heap[s.len] = Neighbor{DistSq: distSq, Label: label}
+		s.len++
+		for i := s.len - 1; i > 0; i-- {
+			if s.heap[i].DistSq > s.heap[i-1].DistSq {
+				s.heap[i], s.heap[i-1] = s.heap[i-1], s.heap[i]
+			}
+		}
+		if s.len == 5 {
+			s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq)))
+		}
+	} else if distSq < s.heap[0].DistSq {
+		// Substitui o maior elemento (no index 0)
+		s.heap[0] = Neighbor{DistSq: distSq, Label: label}
+		for i := 0; i < 4; i++ {
+			if s.heap[i].DistSq < s.heap[i+1].DistSq {
+				s.heap[i], s.heap[i+1] = s.heap[i+1], s.heap[i]
+			} else {
+				break
+			}
+		}
+		s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq)))
+	}
 }
 
 func (s *knnSearchState) search(nodeIdx int32) {
@@ -244,16 +278,7 @@ func (s *knnSearchState) search(nodeIdx int32) {
 	label := s.tree.Labels[node.VPIdx]
 
 	// Consider this vantage point as a candidate neighbor
-	if len(s.heap) < s.k {
-		s.heap = append(s.heap, Neighbor{DistSq: distSq, Label: label})
-		if len(s.heap) == s.k {
-			s.tau = s.findMaxDist()
-		}
-	} else if dist < s.tau {
-		// Replace the farthest neighbor
-		s.replaceMax(Neighbor{DistSq: distSq, Label: label})
-		s.tau = s.findMaxDist()
-	}
+	s.addNeighbor(distSq, label)
 
 	// No children — nothing more to search
 	if node.Left == -1 && node.Right == -1 {
@@ -278,31 +303,9 @@ func (s *knnSearchState) search(nodeIdx int32) {
 	}
 }
 
-// findMaxDist retorna a maior distância do heap atual.
-func (s *knnSearchState) findMaxDist() float32 {
-	maxDistSq := float32(0)
-	for _, n := range s.heap {
-		if n.DistSq > maxDistSq {
-			maxDistSq = n.DistSq
-		}
-	}
-	return float32(math.Sqrt(float64(maxDistSq)))
-}
-
-// replaceMax substitui o vizinho mais distante.
-func (s *knnSearchState) replaceMax(n Neighbor) {
-	maxIdx := 0
-	for i := 1; i < len(s.heap); i++ {
-		if s.heap[i].DistSq > s.heap[maxIdx].DistSq {
-			maxIdx = i
-		}
-	}
-	s.heap[maxIdx] = n
-}
-
-// euclideanDist calcula a distância exata (usado no build/poda).
-func euclideanDist(a, b *[VectorDimsPad]float32) float32 {
-	return float32(math.Sqrt(float64(EuclideanDistSq(a, b))))
+// euclideanDist calcula a distância exata usando referências quantizadas (usado no build).
+func euclideanDist(a, b *[VectorDimsPad]uint8) float32 {
+	return float32(math.Sqrt(float64(EuclideanDistSqRefRef(a, b))))
 }
 
 func min(a, b int) int {
@@ -310,4 +313,31 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// Warmup percorre sequencialmente toda a árvore, vetores e labels na memória física.
+// Isso evita que o primeiro acesso (Page Fault) ocorra durante o processamento das transações.
+func (t *VPTree) Warmup() {
+	var sum uint32
+	// Acessa todos os vetores
+	for i := range t.Vectors {
+		for d := 0; d < VectorDimsPad; d++ {
+			sum += uint32(t.Vectors[i][d])
+		}
+	}
+	// Acessa todos os nós
+	for i := range t.Nodes {
+		sum += uint32(t.Nodes[i].VPIdx)
+		sum += uint32(t.Nodes[i].Radius)
+		sum += uint32(t.Nodes[i].Left)
+		sum += uint32(t.Nodes[i].Right)
+	}
+	// Acessa todas as labels
+	for i := range t.Labels {
+		sum += uint32(t.Labels[i])
+	}
+	// Referência dummy para o compilador não otimizar fora
+	if sum == 0xdeadbeef {
+		println(sum)
+	}
 }

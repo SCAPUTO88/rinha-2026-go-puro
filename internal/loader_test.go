@@ -60,8 +60,8 @@ func TestLoadReferences_ExampleFile(t *testing.T) {
 	if refs[0].Label != LabelLegit {
 		t.Errorf("first ref should be legit, got label=%v", refs[0].Label)
 	}
-	if !approxEq32(refs[0].Vector[0], 0.01, 0.001) {
-		t.Errorf("first ref vector[0] = %v, want ~0.01", refs[0].Vector[0])
+	if !approxEq32(DequantizeToFloat32(refs[0].Vector[0]), 0.01, 0.003) {
+		t.Errorf("first ref vector[0] = %v, want ~0.01", DequantizeToFloat32(refs[0].Vector[0]))
 	}
 }
 
@@ -142,7 +142,10 @@ func TestEndToEnd_BruteForce_ExampleDataset(t *testing.T) {
 
 	vecLegit := Vectorize(reqLegit)
 	neighbors := BruteForceKNN(&vecLegit, refs, 5)
-	score := ComputeFraudScore(neighbors)
+	var knnResult KNNResult
+	copy(knnResult.Neighbors[:], neighbors)
+	knnResult.Len = len(neighbors)
+	score := ComputeFraudScore(knnResult)
 	approved := IsApproved(score)
 
 	t.Logf("Legit tx: fraud_score=%.1f, approved=%v", score, approved)
@@ -181,7 +184,10 @@ func TestEndToEnd_BruteForce_ExampleDataset(t *testing.T) {
 
 	vecFraud := Vectorize(reqFraud)
 	neighborsFraud := BruteForceKNN(&vecFraud, refs, 5)
-	scoreFraud := ComputeFraudScore(neighborsFraud)
+	var knnResultFraud KNNResult
+	copy(knnResultFraud.Neighbors[:], neighborsFraud)
+	knnResultFraud.Len = len(neighborsFraud)
+	scoreFraud := ComputeFraudScore(knnResultFraud)
 	approvedFraud := IsApproved(scoreFraud)
 
 	t.Logf("Fraud tx: fraud_score=%.1f, approved=%v", scoreFraud, approvedFraud)

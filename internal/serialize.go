@@ -119,7 +119,7 @@ func deserializeVPTree(data []byte) (*VPTree, error) {
 
 	numNodes := int(hdr.NumNodes)
 	numRefs := int(hdr.NumRefs)
-	vectorBytes := numRefs * VectorDimsPad * 4 // 4 bytes per float32
+	vectorBytes := numRefs * VectorDimsPad * 1 // 1 byte per uint8
 
 	// Validate total size
 	expectedSize := binHeaderSize + numNodes*binNodeSize + vectorBytes + numRefs
@@ -133,7 +133,7 @@ func deserializeVPTree(data []byte) (*VPTree, error) {
 
 	// Parse vectors using unsafe slice (zero-copy)
 	vectorsOffset := nodesOffset + numNodes*binNodeSize
-	vectors := unsafe.Slice((*[VectorDimsPad]float32)(unsafe.Pointer(&data[vectorsOffset])), numRefs)
+	vectors := unsafe.Slice((*[VectorDimsPad]uint8)(unsafe.Pointer(&data[vectorsOffset])), numRefs)
 
 	// Parse labels (direct slice into data)
 	labelsOffset := vectorsOffset + vectorBytes
@@ -178,9 +178,9 @@ func init() {
 		panic("float32 is not 4 bytes")
 	}
 	// Verify vector alignment
-	var v [VectorDimsPad]float32
-	if unsafe.Sizeof(v) != uintptr(VectorDimsPad*4) {
-		panic(fmt.Sprintf("[%d]float32 size is %d, expected %d", VectorDimsPad, unsafe.Sizeof(v), VectorDimsPad*4))
+	var v [VectorDimsPad]uint8
+	if unsafe.Sizeof(v) != uintptr(VectorDimsPad*1) {
+		panic(fmt.Sprintf("[%d]uint8 size is %d, expected %d", VectorDimsPad, unsafe.Sizeof(v), VectorDimsPad*1))
 	}
 	// Verify we're on little-endian (amd64)
 	buf := [2]byte{}

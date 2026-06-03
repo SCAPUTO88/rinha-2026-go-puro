@@ -100,8 +100,8 @@ func (h *FraudHandler) handleFraudScore(w http.ResponseWriter, r *http.Request) 
 
 	vec := Vectorize(req)
 
-	neighbors := h.tree.KNN(&vec, 5)
-	score := ComputeFraudScore(neighbors)
+	knnRes := h.tree.KNN(&vec, 5)
+	score := ComputeFraudScore(knnRes)
 
 	// Converte score para índice [0-5]
 	idx := int(score*5 + 0.5) // Round to nearest integer
@@ -111,6 +111,12 @@ func (h *FraudHandler) handleFraudScore(w http.ResponseWriter, r *http.Request) 
 	if idx > 5 {
 		idx = 5
 	}
+
+	// Recicla memória no final do processamento feliz
+	resetFraudRequest(req)
+	reqPool.Put(req)
+	*bufPtr = buf
+	bufPool.Put(bufPtr)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

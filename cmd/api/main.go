@@ -47,6 +47,11 @@ func main() {
 	}
 	defer cleanup()
 
+	log.Printf("warming up VP-Tree...")
+	startWarmup := time.Now()
+	tree.Warmup()
+	log.Printf("VP-Tree warmed up in %v", time.Since(startWarmup))
+
 	log.Printf("VP-Tree loaded: %d nodes, %d vectors", len(tree.Nodes), len(tree.Vectors))
 
 	handler := internal.NewFraudHandler(tree)

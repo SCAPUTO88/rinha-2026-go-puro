@@ -63,11 +63,10 @@ func decodeReferences(r io.Reader) ([]Reference, error) {
 		}
 
 		var ref Reference
-		// Copy 14 dims from float64 (JSON) to float32 (internal), padding 14-15 stay zero
+		// Copy 14 dims from float64 (JSON) to uint8 (internal) via QuantizeFloat32, padding 14-15 stay zero
 		for i := 0; i < VectorDims; i++ {
-			ref.Vector[i] = float32(raw.Vector[i])
+			ref.Vector[i] = QuantizeFloat32(float32(raw.Vector[i]))
 		}
-		// ref.Vector[14] and [15] are already zero from struct initialization
 
 		switch raw.Label {
 		case "fraud":

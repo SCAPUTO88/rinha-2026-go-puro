@@ -5,9 +5,12 @@ import (
 )
 
 func TestComputeFraudScore_AllFraud(t *testing.T) {
-	neighbors := []Neighbor{
-		{Label: LabelFraud}, {Label: LabelFraud}, {Label: LabelFraud},
-		{Label: LabelFraud}, {Label: LabelFraud},
+	neighbors := KNNResult{
+		Neighbors: [5]Neighbor{
+			{Label: LabelFraud}, {Label: LabelFraud}, {Label: LabelFraud},
+			{Label: LabelFraud}, {Label: LabelFraud},
+		},
+		Len: 5,
 	}
 	got := ComputeFraudScore(neighbors)
 	if got != 1.0 {
@@ -16,9 +19,12 @@ func TestComputeFraudScore_AllFraud(t *testing.T) {
 }
 
 func TestComputeFraudScore_AllLegit(t *testing.T) {
-	neighbors := []Neighbor{
-		{Label: LabelLegit}, {Label: LabelLegit}, {Label: LabelLegit},
-		{Label: LabelLegit}, {Label: LabelLegit},
+	neighbors := KNNResult{
+		Neighbors: [5]Neighbor{
+			{Label: LabelLegit}, {Label: LabelLegit}, {Label: LabelLegit},
+			{Label: LabelLegit}, {Label: LabelLegit},
+		},
+		Len: 5,
 	}
 	got := ComputeFraudScore(neighbors)
 	if got != 0.0 {
@@ -27,9 +33,12 @@ func TestComputeFraudScore_AllLegit(t *testing.T) {
 }
 
 func TestComputeFraudScore_Mixed3of5(t *testing.T) {
-	neighbors := []Neighbor{
-		{Label: LabelFraud}, {Label: LabelLegit}, {Label: LabelFraud},
-		{Label: LabelLegit}, {Label: LabelFraud},
+	neighbors := KNNResult{
+		Neighbors: [5]Neighbor{
+			{Label: LabelFraud}, {Label: LabelLegit}, {Label: LabelFraud},
+			{Label: LabelLegit}, {Label: LabelFraud},
+		},
+		Len: 5,
 	}
 	got := ComputeFraudScore(neighbors)
 	if got != 0.6 {
@@ -38,9 +47,12 @@ func TestComputeFraudScore_Mixed3of5(t *testing.T) {
 }
 
 func TestComputeFraudScore_Mixed2of5(t *testing.T) {
-	neighbors := []Neighbor{
-		{Label: LabelFraud}, {Label: LabelLegit}, {Label: LabelFraud},
-		{Label: LabelLegit}, {Label: LabelLegit},
+	neighbors := KNNResult{
+		Neighbors: [5]Neighbor{
+			{Label: LabelFraud}, {Label: LabelLegit}, {Label: LabelFraud},
+			{Label: LabelLegit}, {Label: LabelLegit},
+		},
+		Len: 5,
 	}
 	got := ComputeFraudScore(neighbors)
 	if got != 0.4 {
