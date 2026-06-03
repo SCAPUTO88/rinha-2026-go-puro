@@ -18,7 +18,7 @@ A API foi construída em **Go puro**, sem nenhuma dependência externa (nem fram
 
 ## 🛠 Como executar
 
-Para rodar localmente respeitando os limites originais do `docker-compose` da Rinha (0.10c pro Nginx, 0.45c para as APIs):
+Para rodar localmente respeitando os limites do `docker-compose` da Rinha (0.10 CPU pro Nginx, 0.44 CPU para cada API):
 
 ```bash
 docker compose pull
@@ -27,7 +27,9 @@ docker compose up -d
 
 E para realizar um teste de carga apontando para `http://localhost:9999`:
 ```bash
-k6 run .\rinha-de-backend-2026\test\smoke.js
+# Clone o repositório da Rinha para ter acesso ao script de teste
+git clone https://github.com/zanfranceschi/rinha-de-backend-2026.git
+k6 run ./rinha-de-backend-2026/test/smoke.js
 ```
 
 ## 📂 Estrutura de Destaque
