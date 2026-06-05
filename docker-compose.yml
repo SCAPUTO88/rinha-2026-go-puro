@@ -19,11 +19,12 @@ services:
       - rinha
 
   api1:
-    image: scaputo88/rinha-2026-go:v3
+    image: scaputo88/rinha-2026-go:v4
     pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
+      - GOMAXPROCS=1
     restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
@@ -40,11 +41,12 @@ services:
       - rinha
 
   api2:
-    image: scaputo88/rinha-2026-go:v3
+    image: scaputo88/rinha-2026-go:v4
     pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
+      - GOMAXPROCS=1
     restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
