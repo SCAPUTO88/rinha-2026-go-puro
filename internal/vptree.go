@@ -8,6 +8,8 @@ import (
 )
 
 // Pool para reciclar o estado da busca KNN e evitar alocações no hot path.
+// Com DFS search e sem array de candidatos, o estado é apenas ~80 bytes.
+// Completamente seguro mesmo com centenas de goroutines concorrentes.
 var knnStatePool = sync.Pool{
 	New: func() interface{} {
 		return &knnSearchState{}
@@ -22,7 +24,8 @@ type VPNode struct {
 	Right  int32   // Nó direito (distância > Radius)
 }
 
-// VPTree implementa busca K-NN com Priority Queue (best-first) para pruning ótimo.
+// VPTree implementa busca K-NN com DFS e poda por desigualdade triangular.
+// Vetores são reordenados em DFS-order para cache locality (~14× speedup).
 type VPTree struct {
 	Nodes   []VPNode
 	Vectors [][VectorDimsPad]uint8
@@ -57,15 +60,17 @@ func BuildVPTree(refs []Reference) *VPTree {
 	rng := rand.New(rand.NewSource(42))
 	tree.Root = tree.buildRecursive(indices, rng)
 
-	// Reordenar vetores em ordem DFS: acessos sequenciais dentro de sub-árvores
-	// = L3 cache hits em vez de DRAM random → speedup ~14× por visita.
+	// Reordenar vetores em ordem DFS da árvore.
+	// Resultado: quando DFS visita nodes sequencialmente, os vetores
+	// correspondentes estão em memória contígua → L3 cache hits (~5ns)
+	// em vez de DRAM random (~100ns) → speedup ~14×.
 	tree.reorderForCacheLocality()
 
 	return tree
 }
 
 // reorderForCacheLocality reorganiza vetores e labels para ordem DFS dos nós.
-// Após esta operação, Nodes[i].VPIdx == i (acesso identidade = sequential).
+// Após: Nodes[i].VPIdx == i (identidade), e acesso durante busca é sequencial.
 func (t *VPTree) reorderForCacheLocality() {
 	n := len(t.Nodes)
 	if n == 0 {
@@ -77,7 +82,7 @@ func (t *VPTree) reorderForCacheLocality() {
 		vpIdx := t.Nodes[i].VPIdx
 		newVectors[i] = t.Vectors[vpIdx]
 		newLabels[i] = t.Labels[vpIdx]
-		t.Nodes[i].VPIdx = int32(i)
+		t.Nodes[i].VPIdx = int32(i) // identidade: VPIdx == node index
 	}
 	t.Vectors = newVectors
 	t.Labels = newLabels
@@ -197,10 +202,11 @@ func medianPartition(indices []int, dists []float32) float32 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEARCH: Priority Queue (Best-First) KNN
+// SEARCH: DFS com poda por desigualdade triangular + DFS cache locality
 // ─────────────────────────────────────────────────────────────────────────────
 
 // stateNeighbor é um vizinho no max-heap interno dos K-melhores (pior em [0]).
+// DFS visita cada nó exatamente uma vez → sem necessidade de VPIdx (dedup).
 type stateNeighbor struct {
 	DistSq int32
 	Label  uint8
@@ -212,86 +218,33 @@ type KNNResult struct {
 	Len       int
 }
 
-// candidate é uma entrada na fila de prioridade para busca best-first.
-// minDist é o lower bound da distância do query a qualquer ponto na sub-árvore.
-type candidate struct {
-	minDist float32
-	nodeIdx int32
-}
+// maxNodesToVisit: ponto ótimo de score para CPU de 0.45 core por instância.
+//
+// Com vetores em DFS-order (cache-friendly, ~20ns por nó):
+//   - 5000 nós × 20ns = 100μs de CPU por query
+//   - wall clock = 100μs / 0.45 = 222μs
+//   - ρ = 450 req/s × 222μs = 0.10 → muito leve
+//   - p99 ≈ 0.5-1ms → p99_score = 3000 (máximo)
+//
+// E esperado ≈ 1400-1500: entre v3 (3K nós, E=1599) e v4 (50K nós, E=384).
+const maxNodesToVisit = 5000
 
-const (
-	// maxCandidates: tamanho máximo da fila de prioridade.
-	// Cada nó processado adiciona ≤2 filhos → max heap size ≈ nodesVisited + 1.
-	maxCandidates = 120000
-
-	// maxNodesToVisit: limite de segurança. Na prática, a PQ termina antes
-	// (quando min lower_bound > tau), visitando muito menos nós.
-	maxNodesToVisit = 100000
-)
-
-// knnSearchState contém todo o estado reutilizável de uma busca KNN (pooled).
-// Tamanho: ~960KB (dominado pelo array de candidates). Com GOMAXPROCS=1 e GOGC=off,
-// apenas 1 instância é alocada para sempre.
+// knnSearchState é reciclável via sync.Pool — 80 bytes, completamente seguro.
+// Sem array de candidatos (como o PQ erroneamente tinha): sem risco de OOM.
 type knnSearchState struct {
-	// Max-heap dos K-melhores vizinhos: heap[0] = o PIOR (maior DistSq)
+	// K-melhores vizinhos: max-heap com o PIOR (maior DistSq) em heap[0]
 	heap [5]stateNeighbor
 	hLen int
-	tau  float32 // distância real ao heap[0]
+	tau  float32 // distância real ao heap[0] (pior dos K-melhores)
 
-	// Min-heap para busca por prioridade (menor lower_bound primeiro)
-	cands  [maxCandidates]candidate
-	nCands int
-}
-
-// candPush adiciona um candidato ao min-heap de prioridade.
-func (s *knnSearchState) candPush(minDist float32, nodeIdx int32) {
-	if s.nCands >= maxCandidates {
-		return
-	}
-	i := s.nCands
-	s.cands[i] = candidate{minDist, nodeIdx}
-	s.nCands++
-	for i > 0 {
-		p := (i - 1) >> 1
-		if s.cands[i].minDist < s.cands[p].minDist {
-			s.cands[i], s.cands[p] = s.cands[p], s.cands[i]
-			i = p
-		} else {
-			break
-		}
-	}
-}
-
-// candPop remove e retorna o candidato com menor minDist do min-heap.
-func (s *knnSearchState) candPop() (float32, int32) {
-	r := s.cands[0]
-	s.nCands--
-	if s.nCands > 0 {
-		s.cands[0] = s.cands[s.nCands]
-		i := 0
-		for {
-			l, right := 2*i+1, 2*i+2
-			m := i
-			if l < s.nCands && s.cands[l].minDist < s.cands[m].minDist {
-				m = l
-			}
-			if right < s.nCands && s.cands[right].minDist < s.cands[m].minDist {
-				m = right
-			}
-			if m == i {
-				break
-			}
-			s.cands[i], s.cands[m] = s.cands[m], s.cands[i]
-			i = m
-		}
-	}
-	return r.minDist, r.nodeIdx
+	visited int // nós visitados nesta busca
 }
 
 // addNeighbor tenta inserir um ponto no max-heap de K-melhores.
-// Com PQ search, cada nó é visitado no máximo uma vez → sem deduplicação.
+// DFS garante que cada nó é visitado no máximo uma vez → sem deduplicação.
 func (s *knnSearchState) addNeighbor(distSq int32, label uint8) {
 	if s.hLen < 5 {
+		// Heap não cheio: insere e faz sift-up (max-heap)
 		s.heap[s.hLen] = stateNeighbor{DistSq: distSq, Label: label}
 		s.hLen++
 		i := s.hLen - 1
@@ -308,6 +261,7 @@ func (s *knnSearchState) addNeighbor(distSq int32, label uint8) {
 			s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq))) * 0.008
 		}
 	} else if distSq < s.heap[0].DistSq {
+		// Heap cheio: substitui o pior e faz sift-down (max-heap)
 		s.heap[0] = stateNeighbor{DistSq: distSq, Label: label}
 		i := 0
 		for {
@@ -329,19 +283,52 @@ func (s *knnSearchState) addNeighbor(distSq int32, label uint8) {
 	}
 }
 
-// KNN realiza busca K-NN usando Priority Queue (best-first search).
+// dfsSearch realiza DFS recursivo com poda por desigualdade triangular.
 //
-// Por que é melhor que DFS com limite:
-//   - DFS visita nós em ordem de profundidade arbitrária → tau cai devagar
-//   - PQ visita nós em ordem crescente de lower_bound → tau cai RÁPIDO
-//   - Com tau menor, mais branches são podadas → menos nós para mesma precisão
+// Poda: se a distância mínima possível de qualquer ponto no subtree > tau,
+// o subtree inteiro pode ser ignorado. Isso é garantido por:
+//   - dist < radius → subtree direito: dist mínima ≥ radius - dist
+//   - dist ≥ radius → subtree esquerdo: dist mínima ≥ dist - radius
 //
-// Lower bounds via desigualdade triangular (provadamente corretos):
-//   - Filho esquerdo (dist_VP ≤ radius): lb = max(0, dist_query - radius)
-//   - Filho direito  (dist_VP > radius): lb = max(0, radius - dist_query)
+// Com DFS-order nos vetores, a travessia greedy (root → leaf) acessa
+// memória sequencialmente → L3 cache hits → alta eficiência.
+func (t *VPTree) dfsSearch(s *knnSearchState, query *[VectorDimsPad]uint8, nodeIdx int32) {
+	if nodeIdx == -1 || s.visited >= maxNodesToVisit {
+		return
+	}
+
+	node := &t.Nodes[nodeIdx]
+	distSq := EuclideanDistSq(query, &t.Vectors[node.VPIdx])
+	dist := float32(math.Sqrt(float64(distSq))) * 0.008
+
+	s.addNeighbor(distSq, t.Labels[node.VPIdx])
+	s.visited++
+
+	if dist < node.Radius {
+		// Query dentro da bola: vai para o lado esquerdo primeiro (mais promissor)
+		t.dfsSearch(s, query, node.Left)
+		// Só vai para o direito se o raio de busca ultrapassa a fronteira
+		if node.Radius-dist <= s.tau {
+			t.dfsSearch(s, query, node.Right)
+		}
+	} else {
+		// Query fora da bola: vai para o lado direito primeiro (mais promissor)
+		t.dfsSearch(s, query, node.Right)
+		// Só vai para o esquerdo se o raio de busca ultrapassa a fronteira
+		if dist-node.Radius <= s.tau {
+			t.dfsSearch(s, query, node.Left)
+		}
+	}
+}
+
+// KNN encontra os K vizinhos mais próximos usando DFS com poda triangular.
 //
-// Garantia de exatidão: quando min(lb in queue) > tau → resultado é EXATO.
-// Limite maxNodesToVisit é safety net para queries patológicas (14D, fronteira).
+// O DFS naturalmente visita o "caminho guloso" (root → leaf) primeiro,
+// inicializando tau rapidamente com bons vizinhos. Isso maximiza o pruning
+// das branches subsequentes, mantendo a busca eficiente.
+//
+// Com reorderForCacheLocality: vetores no caminho guloso estão em memória
+// contígua → L1/L2 cache hits nos primeiros 22 nós → tau ótimo inicial.
 func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	if t.Root == -1 {
 		return KNNResult{}
@@ -350,53 +337,9 @@ func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	s := knnStatePool.Get().(*knnSearchState)
 	s.hLen = 0
 	s.tau = math.MaxFloat32
-	s.nCands = 0
+	s.visited = 0
 
-	s.candPush(0, t.Root)
-
-	visited := 0
-	for s.nCands > 0 {
-		minDist, nodeIdx := s.candPop()
-
-		// Pruning: todos os restantes têm lb ≥ minDist > tau → resultado já é exato
-		if minDist > s.tau {
-			break
-		}
-		if visited >= maxNodesToVisit {
-			break
-		}
-
-		node := &t.Nodes[nodeIdx]
-		distSq := EuclideanDistSq(query, &t.Vectors[node.VPIdx])
-		dist := float32(math.Sqrt(float64(distSq))) * 0.008
-		label := t.Labels[node.VPIdx]
-
-		s.addNeighbor(distSq, label)
-		visited++
-
-		// Filho esquerdo: pontos com dist_from_VP ≤ radius
-		// lb = max(0, dist - radius)  [desigualdade triangular]
-		if node.Left != -1 {
-			lb := dist - node.Radius
-			if lb < 0 {
-				lb = 0
-			}
-			if lb <= s.tau {
-				s.candPush(lb, node.Left)
-			}
-		}
-		// Filho direito: pontos com dist_from_VP > radius
-		// lb = max(0, radius - dist)  [desigualdade triangular]
-		if node.Right != -1 {
-			lb := node.Radius - dist
-			if lb < 0 {
-				lb = 0
-			}
-			if lb <= s.tau {
-				s.candPush(lb, node.Right)
-			}
-		}
-	}
+	t.dfsSearch(s, query, t.Root)
 
 	var result KNNResult
 	result.Len = s.hLen
