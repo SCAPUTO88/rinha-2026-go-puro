@@ -19,7 +19,8 @@ services:
       - rinha
 
   api1:
-    image: scaputo88/rinha-2026-go:latest
+    image: scaputo88/rinha-2026-go:v2
+    pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
@@ -39,7 +40,8 @@ services:
       - rinha
 
   api2:
-    image: scaputo88/rinha-2026-go:latest
+    image: scaputo88/rinha-2026-go:v2
+    pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
