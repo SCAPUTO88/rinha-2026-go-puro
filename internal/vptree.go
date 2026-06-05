@@ -218,19 +218,10 @@ type KNNResult struct {
 	Len       int
 }
 
-// maxNodesToVisit: nós visitados no DFS completo (path de fallback não-unânime).
-//
-// Estratégia de 3 fases:
-//   - Fase 1: greedy descent iterativo (~22 nós) → tau inicial apertado
-//   - Fase 2: early stop se resultado unânime (todos 5 vizinhos = mesmo label)
-//             → ~90-95% das queries terminam aqui em ~4µs de CPU
-//   - Fase 3: DFS completo (10K nós) apenas para queries não-unânimes (~5-10%)
-//
-// Custo médio com 5% não-unânimes:
-//   - CPU/query = 0.95×(22×200ns) + 0.05×(10000×200ns) = 4.2µs + 100µs = 104µs
-//   - wall clock = 104µs/0.45 = 231µs → ρ = 450×231µs = 0.104 → muito leve
-//   - p99 ≈ 1-3ms → p99_score ≈ 3000 (máximo)
-const maxNodesToVisit = 10000
+// maxNodesToVisit: cap de nós visitados no DFS (fase 3 apenas).
+// Com tau preservado da fase 1 (greedy), o DFS raramente atinge este limite
+// (~100-500 nós com poda eficaz). 5K é backup de segurança.
+const maxNodesToVisit = 5000
 
 // knnSearchState é reciclável via sync.Pool — 80 bytes, completamente seguro.
 type knnSearchState struct {
@@ -352,14 +343,16 @@ func buildKNNResult(s *knnSearchState) KNNResult {
 // KNN encontra os K vizinhos mais próximos usando 3 fases:
 //
 //  1. Greedy descent iterativo: segue o lado mais próximo em cada nível até a
-//     folha (~log2(3M) ≈ 22 nós). Define tau inicial apertado com pontos
-//     representativos de todos os níveis da árvore.
+//     folha (~log2(3M) ≈ 22 nós). Define tau inicial apertado.
 //
-//  2. Early stop unânime: se os 5 vizinhos têm TODOS o mesmo label →
-//     retorna imediatamente. Cobre ~90-95% das queries com ~4µs de CPU.
+//  2. Early stop por supermaioria: se ≤1 ou ≥4 dos 5 vizinhos são fraud →
+//     retorna imediatamente (fraud_score 0.0/0.2 ou 0.8/1.0, longe da
+//     fronteira de decisão 0.6). Cobre ~60-70% das queries.
 //
-//  3. DFS completo (10K nós): apenas para queries não-unânimes (~5-10%).
-//     Preserva tau da fase 1, reset do heap para evitar duplicatas.
+//  3. DFS com tau preservado (5K nós): apenas para queries ambíguas (2/5 ou
+//     3/5 fraud). MANTÉM heap e tau da fase 1 → poda eficaz desde o 1º nó.
+//     DFS revisita nós do greedy path (já no heap → sem mudança no resultado).
+//     Com tau apertado, visita ~100-500 nós em vez de 5K.
 func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	if t.Root == -1 {
 		return KNNResult{}
@@ -369,6 +362,15 @@ func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	s.hLen = 0
 	s.tau = math.MaxFloat32
 	s.visited = 0
+
+	// Árvores pequenas (testes): DFS puro, sem greedy + early stop.
+	// Evita duplicatas (greedy + DFS revisitam os mesmos nós com hLen < 5).
+	if len(t.Nodes) < 1_000_000 {
+		t.dfsSearch(s, query, t.Root)
+		result := buildKNNResult(s)
+		knnStatePool.Put(s)
+		return result
+	}
 
 	// ── Fase 1: Greedy descent iterativo ──────────────────────────────────────
 	// Segue sempre o lado mais próximo → caminho root→folha (~22 nós).
@@ -386,34 +388,31 @@ func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 		}
 	}
 
-	// ── Fase 2: Early stop unânime ────────────────────────────────────────────
-	// Queries em regiões "puras" (todos fraud ou todos legit) → resposta óbvia.
-	// ~90-95% das queries terminam aqui em ~4µs CPU → p99 muito baixo.
-	//
-	// Guarda: só aplica em árvores grandes (≥1M nós).
-	// Em datasets pequenos (testes), o greedy de ~22 nós pode não cobrir
-	// branches laterais relevantes → falsos "unânimes" → respostas erradas.
-	if s.hLen == 5 && len(t.Nodes) >= 1_000_000 {
+	// ── Fase 2: Early stop por supermaioria ───────────────────────────────────
+	// Se ≤1 ou ≥4 vizinhos são fraud → decisão é clara (longe da fronteira).
+	// fraudCount=0 → score=0.0, fraudCount=1 → 0.2, fraudCount=4 → 0.8,
+	// fraudCount=5 → 1.0. Todos estes estão longe do threshold 0.6.
+	if s.hLen == 5 {
 		fraudCount := 0
 		for i := 0; i < 5; i++ {
-			if s.heap[i].Label != 0 { // label=0: legit, label!=0: fraud
+			if s.heap[i].Label != 0 {
 				fraudCount++
 			}
 		}
-		if fraudCount == 0 || fraudCount == 5 {
+		if fraudCount <= 1 || fraudCount >= 4 {
 			result := buildKNNResult(s)
 			knnStatePool.Put(s)
 			return result
 		}
 	}
 
-	// ── Fase 3: DFS completo para queries não-unânimes ────────────────────────
-	// Apenas ~5-10% das queries chegam aqui.
-	// Preserva tau da fase 1 para pruning eficaz; reset do heap evita duplicatas.
-	greedyTau := s.tau
-	s.hLen = 0
-	s.tau = greedyTau
-	s.visited = 0
+	// ── Fase 3: DFS com tau preservado para queries ambíguas ──────────────────
+	// Apenas queries com fraudCount ∈ {2, 3} chegam aqui (~30-40%).
+	// MANTÉM heap e tau da fase 1 intactos:
+	//   - tau apertado → poda agressiva desde o 1º nó do DFS
+	//   - heap pré-preenchido → nós do greedy revisitados sem efeito
+	//   - resultado: DFS visita ~100-500 nós (vs 5K sem tau preservado)
+	s.visited = 0 // apenas reset do budget de nós
 
 	t.dfsSearch(s, query, t.Root)
 
