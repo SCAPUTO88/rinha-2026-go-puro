@@ -218,10 +218,8 @@ type KNNResult struct {
 	Len       int
 }
 
-// maxNodesToVisit: cap de nós visitados no DFS (fase 3 apenas).
-// Com tau preservado da fase 1 (greedy), o DFS raramente atinge este limite
-// (~100-500 nós com poda eficaz). 5K é backup de segurança.
-const maxNodesToVisit = 5000
+// maxNodesToVisit: nós visitados no DFS (fase 3).
+const maxNodesToVisit = 10000
 
 // knnSearchState é reciclável via sync.Pool — 80 bytes, completamente seguro.
 type knnSearchState struct {
@@ -278,11 +276,7 @@ func (s *knnSearchState) addNeighbor(distSq int32, label uint8) {
 
 // dfsSearch realiza DFS recursivo com poda por desigualdade triangular.
 //
-// Otimização: sem SQRT por nó! Usa distSqF = distSq*0.000064 (= dist² real)
-// e radiusSq = Radius² para todas as comparações → elimina 10000 sqrts/query.
-// SQRT só ocorre em addNeighbor (~10×/query quando o heap é atualizado).
-//
-// Poda (em espaço quadrático, matematicamente equivalente ao original):
+// Poda (sem SQRT por nó, em espaço quadrático):
 //   - Q dentro da bola (distSqF < R²): prune right se diff>0 && diff²>distSqF
 //   - Q fora da bola  (distSqF ≥ R²):  prune left  se sum²<distSqF
 func (t *VPTree) dfsSearch(s *knnSearchState, query *[VectorDimsPad]uint8, nodeIdx int32) {
@@ -292,24 +286,20 @@ func (t *VPTree) dfsSearch(s *knnSearchState, query *[VectorDimsPad]uint8, nodeI
 
 	node := &t.Nodes[nodeIdx]
 	distSq := EuclideanDistSq(query, &t.Vectors[node.VPIdx])
-	distSqF := float32(distSq) * 0.000064 // dist² real sem sqrt
-	radiusSq := node.Radius * node.Radius   // R² (1 multiply, sem sqrt)
+	distSqF := float32(distSq) * 0.000064
+	radiusSq := node.Radius * node.Radius
 
 	s.addNeighbor(distSq, t.Labels[node.VPIdx])
 	s.visited++
 
 	if distSqF < radiusSq {
-		// Q dentro da bola → esquerdo primeiro (mais promissor)
 		t.dfsSearch(s, query, node.Left)
-		// Prune direito: só visita se diff≤0 (tau≥R) ou diff²≤distSqF
 		diff := node.Radius - s.tau
 		if diff <= 0 || diff*diff <= distSqF {
 			t.dfsSearch(s, query, node.Right)
 		}
 	} else {
-		// Q fora da bola → direito primeiro (mais promissor)
 		t.dfsSearch(s, query, node.Right)
-		// Prune esquerdo: só visita se sum²≥distSqF
 		sum := node.Radius + s.tau
 		if sum*sum >= distSqF {
 			t.dfsSearch(s, query, node.Left)
@@ -327,7 +317,6 @@ func buildKNNResult(s *knnSearchState) KNNResult {
 			Label:  s.heap[i].Label,
 		}
 	}
-	// Insertion sort ascendente (ótimo para ≤5 elementos)
 	for i := 1; i < result.Len; i++ {
 		key := result.Neighbors[i]
 		j := i - 1
@@ -342,17 +331,9 @@ func buildKNNResult(s *knnSearchState) KNNResult {
 
 // KNN encontra os K vizinhos mais próximos usando 3 fases:
 //
-//  1. Greedy descent iterativo: segue o lado mais próximo em cada nível até a
-//     folha (~log2(3M) ≈ 22 nós). Define tau inicial apertado.
-//
-//  2. Early stop por supermaioria: se ≤1 ou ≥4 dos 5 vizinhos são fraud →
-//     retorna imediatamente (fraud_score 0.0/0.2 ou 0.8/1.0, longe da
-//     fronteira de decisão 0.6). Cobre ~60-70% das queries.
-//
-//  3. DFS com tau preservado (5K nós): apenas para queries ambíguas (2/5 ou
-//     3/5 fraud). MANTÉM heap e tau da fase 1 → poda eficaz desde o 1º nó.
-//     DFS revisita nós do greedy path (já no heap → sem mudança no resultado).
-//     Com tau apertado, visita ~100-500 nós em vez de 5K.
+//  1. Greedy descent iterativo (~22 nós) → tau inicial apertado.
+//  2. Early stop unânime: todos 5 vizinhos mesmo label → retorna.
+//  3. DFS completo (10K nós): reset heap, preserva greedyTau.
 func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	if t.Root == -1 {
 		return KNNResult{}
@@ -363,17 +344,7 @@ func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	s.tau = math.MaxFloat32
 	s.visited = 0
 
-	// Árvores pequenas (testes): DFS puro, sem greedy + early stop.
-	// Evita duplicatas (greedy + DFS revisitam os mesmos nós com hLen < 5).
-	if len(t.Nodes) < 1_000_000 {
-		t.dfsSearch(s, query, t.Root)
-		result := buildKNNResult(s)
-		knnStatePool.Put(s)
-		return result
-	}
-
-	// ── Fase 1: Greedy descent iterativo ──────────────────────────────────────
-	// Segue sempre o lado mais próximo → caminho root→folha (~22 nós).
+	// ── Fase 1: Greedy descent ────────────────────────────────────────────────
 	curr := t.Root
 	for curr != -1 {
 		node := &t.Nodes[curr]
@@ -388,31 +359,27 @@ func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 		}
 	}
 
-	// ── Fase 2: Early stop por supermaioria ───────────────────────────────────
-	// Se ≤1 ou ≥4 vizinhos são fraud → decisão é clara (longe da fronteira).
-	// fraudCount=0 → score=0.0, fraudCount=1 → 0.2, fraudCount=4 → 0.8,
-	// fraudCount=5 → 1.0. Todos estes estão longe do threshold 0.6.
-	if s.hLen == 5 {
+	// ── Fase 2: Early stop unânime (apenas árvores ≥1M nós) ──────────────────
+	if s.hLen == 5 && len(t.Nodes) >= 1_000_000 {
 		fraudCount := 0
 		for i := 0; i < 5; i++ {
 			if s.heap[i].Label != 0 {
 				fraudCount++
 			}
 		}
-		if fraudCount <= 1 || fraudCount >= 4 {
+		if fraudCount == 0 || fraudCount == 5 {
 			result := buildKNNResult(s)
 			knnStatePool.Put(s)
 			return result
 		}
 	}
 
-	// ── Fase 3: DFS com tau preservado para queries ambíguas ──────────────────
-	// Apenas queries com fraudCount ∈ {2, 3} chegam aqui (~30-40%).
-	// MANTÉM heap e tau da fase 1 intactos:
-	//   - tau apertado → poda agressiva desde o 1º nó do DFS
-	//   - heap pré-preenchido → nós do greedy revisitados sem efeito
-	//   - resultado: DFS visita ~100-500 nós (vs 5K sem tau preservado)
-	s.visited = 0 // apenas reset do budget de nós
+	// ── Fase 3: DFS completo ──────────────────────────────────────────────────
+	// Reset heap, preserva greedyTau para pruning inicial.
+	greedyTau := s.tau
+	s.hLen = 0
+	s.tau = greedyTau
+	s.visited = 0
 
 	t.dfsSearch(s, query, t.Root)
 
