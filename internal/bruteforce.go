@@ -13,18 +13,25 @@ func BruteForceKNN(query *[VectorDimsPad]float32, refs []Reference, k int) []Nei
 		k = len(refs)
 	}
 
+	// Quantiza a query float32 para usar a distância inteira
+	var qQuery [VectorDimsPad]uint8
+	for i := 0; i < VectorDimsPad; i++ {
+		qQuery[i] = QuantizeFloat32(query[i])
+	}
+
 	// Max-heap simples com capacidade K.
 	heap := make([]Neighbor, 0, k)
 
 	for i := range refs {
-		dist := EuclideanDistSq(query, &refs[i].Vector)
+		intDistSq := EuclideanDistSq(&qQuery, &refs[i].Vector)
+		realDistSq := float32(intDistSq) * 0.000064
 
 		if len(heap) < k {
 			// Heap not full yet — insert and maintain sorted order
-			heap = insertSorted(heap, Neighbor{DistSq: dist, Label: refs[i].Label})
-		} else if dist < heap[k-1].DistSq {
+			heap = insertSorted(heap, Neighbor{DistSq: realDistSq, Label: refs[i].Label})
+		} else if realDistSq < heap[k-1].DistSq {
 			// Closer than the farthest in heap — replace and re-sort
-			heap[k-1] = Neighbor{DistSq: dist, Label: refs[i].Label}
+			heap[k-1] = Neighbor{DistSq: realDistSq, Label: refs[i].Label}
 			heap = insertSorted(heap[:k-1], heap[k-1])
 		}
 	}

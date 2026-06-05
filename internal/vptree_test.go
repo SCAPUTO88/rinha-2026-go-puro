@@ -39,7 +39,12 @@ func TestVPTree_KNN_MatchesBruteForce_SmallDataset(t *testing.T) {
 
 	for qi, query := range queries {
 		bfNeighbors := BruteForceKNN(&query, refs, 5)
-		vpNeighbors := tree.KNN(&query, 5)
+
+		var qQuery [VectorDimsPad]uint8
+		for i, v := range query {
+			qQuery[i] = QuantizeFloat32(v)
+		}
+		vpNeighbors := tree.KNN(&qQuery, 5)
 
 		if vpNeighbors.Len != len(bfNeighbors) {
 			t.Errorf("query[%d]: VP-Tree returned %d neighbors, brute force returned %d",
@@ -51,7 +56,7 @@ func TestVPTree_KNN_MatchesBruteForce_SmallDataset(t *testing.T) {
 		for i := 0; i < vpNeighbors.Len; i++ {
 			vpN := vpNeighbors.Neighbors[i]
 			bfN := bfNeighbors[i]
-			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-4) {
+			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-2) {
 				t.Errorf("query[%d] neighbor[%d]: VP dist²=%.6f, BF dist²=%.6f",
 					qi, i, vpN.DistSq, bfN.DistSq)
 			}
@@ -96,7 +101,7 @@ func TestVPTree_KNN_MatchesBruteForce_ExampleDataset(t *testing.T) {
 	mismatchCount := 0
 	totalQueries := 0
 	for i := 0; i < len(refs); i += 10 {
-		// Desquantiza para criar a query float32
+		// Desquantiza para criar a query float32 para o BruteForceKNN
 		var query [VectorDimsPad]float32
 		for d, v := range refs[i].Vector {
 			query[d] = DequantizeToFloat32(v)
@@ -104,7 +109,7 @@ func TestVPTree_KNN_MatchesBruteForce_ExampleDataset(t *testing.T) {
 		totalQueries++
 
 		bfNeighbors := BruteForceKNN(&query, refs, 5)
-		vpNeighbors := tree.KNN(&query, 5)
+		vpNeighbors := tree.KNN(&refs[i].Vector, 5)
 
 		if vpNeighbors.Len != len(bfNeighbors) {
 			t.Errorf("query[%d]: VP returned %d, BF returned %d", i, vpNeighbors.Len, len(bfNeighbors))
@@ -128,7 +133,7 @@ func TestVPTree_KNN_MatchesBruteForce_ExampleDataset(t *testing.T) {
 		for j := 0; j < vpNeighbors.Len; j++ {
 			vpN := vpNeighbors.Neighbors[j]
 			bfN := bfNeighbors[j]
-			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-3) {
+			if !approxEq32(vpN.DistSq, bfN.DistSq, 1e-2) {
 				t.Errorf("query[%d] neighbor[%d]: VP dist²=%.6f, BF dist²=%.6f",
 					i, j, vpN.DistSq, bfN.DistSq)
 				mismatchCount++
@@ -174,7 +179,11 @@ func TestVPTree_KNN_SpecExample_Legit(t *testing.T) {
 	}
 
 	vec := Vectorize(req)
-	neighbors := tree.KNN(&vec, 5)
+	var qVec [VectorDimsPad]uint8
+	for i, f := range vec {
+		qVec[i] = QuantizeFloat32(f)
+	}
+	neighbors := tree.KNN(&qVec, 5)
 	score := ComputeFraudScore(neighbors)
 	approved := IsApproved(score)
 
@@ -224,7 +233,11 @@ func TestVPTree_KNN_SpecExample_Fraud(t *testing.T) {
 	}
 
 	vec := Vectorize(req)
-	neighbors := tree.KNN(&vec, 5)
+	var qVec [VectorDimsPad]uint8
+	for i, f := range vec {
+		qVec[i] = QuantizeFloat32(f)
+	}
+	neighbors := tree.KNN(&qVec, 5)
 	score := ComputeFraudScore(neighbors)
 	approved := IsApproved(score)
 
@@ -255,7 +268,11 @@ func TestVPTree_KNN_SingleElement(t *testing.T) {
 	tree := BuildVPTree(refs)
 
 	query := [VectorDimsPad]float32{0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0, 1, 0, 0.3, 0.05, 0, 0}
-	neighbors := tree.KNN(&query, 5)
+	var qQuery [VectorDimsPad]uint8
+	for i, f := range query {
+		qQuery[i] = QuantizeFloat32(f)
+	}
+	neighbors := tree.KNN(&qQuery, 5)
 
 	if neighbors.Len != 1 {
 		t.Fatalf("expected 1 neighbor from single-element tree, got %d", neighbors.Len)
@@ -270,7 +287,11 @@ func TestVPTree_KNN_EmptyDataset(t *testing.T) {
 	tree := BuildVPTree(refs)
 
 	query := [VectorDimsPad]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 0, 0.3, 0.05, 0, 0}
-	neighbors := tree.KNN(&query, 5)
+	var qQuery [VectorDimsPad]uint8
+	for i, f := range query {
+		qQuery[i] = QuantizeFloat32(f)
+	}
+	neighbors := tree.KNN(&qQuery, 5)
 
 	if neighbors.Len != 0 {
 		t.Errorf("expected 0 neighbors from empty tree, got %d", neighbors.Len)

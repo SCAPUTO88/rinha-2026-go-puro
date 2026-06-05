@@ -191,13 +191,19 @@ func medianPartition(indices []int, dists []float32) float32 {
 	return dists[mid-1]
 }
 
+type stateNeighbor struct {
+	DistSq int32
+	VPIdx  int32
+	Label  uint8
+}
+
 type KNNResult struct {
 	Neighbors [5]Neighbor
 	Len       int
 }
 
 // KNN encontra os k-vizinhos mais próximos aplicando poda por desigualdade triangular de forma zero-alloc.
-func (t *VPTree) KNN(query *[VectorDimsPad]float32, k int) KNNResult {
+func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
 	if t.Root == -1 {
 		return KNNResult{}
 	}
@@ -208,14 +214,23 @@ func (t *VPTree) KNN(query *[VectorDimsPad]float32, k int) KNNResult {
 	s.k = k
 	s.len = 0
 	s.tau = float32(math.Inf(1))
-	s.heap = [5]Neighbor{} // zera heap anterior
+	s.heap = [5]stateNeighbor{} // zera heap anterior
 
+	// 1. Busca gulosa rápida para popular o heap e diminuir o tau inicial
+	s.searchGreedy(t.Root)
+
+	// 2. Busca recursiva exata aplicando as podas precocemente com o tau inicial reduzido
 	s.search(t.Root)
 
-	// Copia o resultado
+	// Copia e desquantiza o resultado
 	var result KNNResult
-	result.Neighbors = s.heap
 	result.Len = s.len
+	for i := 0; i < s.len; i++ {
+		result.Neighbors[i] = Neighbor{
+			DistSq: float32(s.heap[i].DistSq) * 0.000064,
+			Label:  s.heap[i].Label,
+		}
+	}
 
 	knnStatePool.Put(s)
 
@@ -231,17 +246,24 @@ func (t *VPTree) KNN(query *[VectorDimsPad]float32, k int) KNNResult {
 // knnSearchState é reciclável para não gerar lixo no GC durante buscas sucessivas.
 type knnSearchState struct {
 	tree  *VPTree
-	query *[VectorDimsPad]float32
+	query *[VectorDimsPad]uint8
 	k     int
-	heap  [5]Neighbor // Array fixo
+	heap  [5]stateNeighbor // Array fixo
 	len   int
-	tau   float32     // Worst actual distance (not squared)
+	tau   float32          // Worst actual distance (not squared)
 }
 
-func (s *knnSearchState) addNeighbor(distSq float32, label uint8) {
+func (s *knnSearchState) addNeighbor(distSq int32, vpIdx int32, label uint8) {
+	// Evita duplicadas de nós visitados no greedy e na busca principal
+	for i := 0; i < s.len; i++ {
+		if s.heap[i].VPIdx == vpIdx {
+			return
+		}
+	}
+
 	if s.len < 5 {
 		// Insere mantendo ordenado decrescentemente por DistSq
-		s.heap[s.len] = Neighbor{DistSq: distSq, Label: label}
+		s.heap[s.len] = stateNeighbor{DistSq: distSq, VPIdx: vpIdx, Label: label}
 		s.len++
 		for i := s.len - 1; i > 0; i-- {
 			if s.heap[i].DistSq > s.heap[i-1].DistSq {
@@ -249,11 +271,11 @@ func (s *knnSearchState) addNeighbor(distSq float32, label uint8) {
 			}
 		}
 		if s.len == 5 {
-			s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq)))
+			s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq))) * 0.008
 		}
 	} else if distSq < s.heap[0].DistSq {
 		// Substitui o maior elemento (no index 0)
-		s.heap[0] = Neighbor{DistSq: distSq, Label: label}
+		s.heap[0] = stateNeighbor{DistSq: distSq, VPIdx: vpIdx, Label: label}
 		for i := 0; i < 4; i++ {
 			if s.heap[i].DistSq < s.heap[i+1].DistSq {
 				s.heap[i], s.heap[i+1] = s.heap[i+1], s.heap[i]
@@ -261,7 +283,28 @@ func (s *knnSearchState) addNeighbor(distSq float32, label uint8) {
 				break
 			}
 		}
-		s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq)))
+		s.tau = float32(math.Sqrt(float64(s.heap[0].DistSq))) * 0.008
+	}
+}
+
+func (s *knnSearchState) searchGreedy(nodeIdx int32) {
+	curr := nodeIdx
+	for curr != -1 {
+		node := &s.tree.Nodes[curr]
+		distSq := EuclideanDistSq(s.query, &s.tree.Vectors[node.VPIdx])
+		label := s.tree.Labels[node.VPIdx]
+		s.addNeighbor(distSq, node.VPIdx, label)
+
+		if node.Left == -1 && node.Right == -1 {
+			break
+		}
+
+		dist := float32(math.Sqrt(float64(distSq))) * 0.008
+		if dist < node.Radius {
+			curr = node.Left
+		} else {
+			curr = node.Right
+		}
 	}
 }
 
@@ -272,32 +315,28 @@ func (s *knnSearchState) search(nodeIdx int32) {
 
 	node := &s.tree.Nodes[nodeIdx]
 
-	// Compute actual distance from query to vantage point
 	distSq := EuclideanDistSq(s.query, &s.tree.Vectors[node.VPIdx])
-	dist := float32(math.Sqrt(float64(distSq)))
+	dist := float32(math.Sqrt(float64(distSq))) * 0.008
 	label := s.tree.Labels[node.VPIdx]
 
-	// Consider this vantage point as a candidate neighbor
-	s.addNeighbor(distSq, label)
+	s.addNeighbor(distSq, node.VPIdx, label)
 
-	// No children — nothing more to search
 	if node.Left == -1 && node.Right == -1 {
 		return
 	}
 
-	// Determine search order and pruning
 	if dist < node.Radius {
-		// Query is inside the ball — search Left (inside) first
+		// Busca o lado esquerdo primeiro
 		s.search(node.Left)
-		// Search Right (outside) only if our search sphere crosses the ball boundary
-		if dist+s.tau >= node.Radius {
+		// Pruning check: busca o lado direito apenas se a nossa esfera de busca cruzar o limite
+		if node.Radius-dist <= s.tau {
 			s.search(node.Right)
 		}
 	} else {
-		// Query is outside the ball — search Right (outside) first
+		// Busca o lado direito primeiro
 		s.search(node.Right)
-		// Search Left (inside) only if our search sphere crosses the ball boundary
-		if dist-s.tau <= node.Radius {
+		// Pruning check: busca o lado esquerdo apenas se a nossa esfera de busca cruzar o limite
+		if dist-node.Radius <= s.tau {
 			s.search(node.Left)
 		}
 	}
@@ -305,7 +344,7 @@ func (s *knnSearchState) search(nodeIdx int32) {
 
 // euclideanDist calcula a distância exata usando referências quantizadas (usado no build).
 func euclideanDist(a, b *[VectorDimsPad]uint8) float32 {
-	return float32(math.Sqrt(float64(EuclideanDistSqRefRef(a, b))))
+	return float32(math.Sqrt(float64(EuclideanDistSq(a, b)))) * 0.008
 }
 
 func min(a, b int) int {

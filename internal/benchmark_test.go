@@ -1,16 +1,20 @@
 package internal
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"net/http/httptest"
 	"testing"
 )
 
 // BenchmarkEuclideanDistSq measures the scalar distance function.
 func BenchmarkEuclideanDistSq(b *testing.B) {
-	a := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	aFloats := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	var a [VectorDimsPad]uint8
+	for i, v := range aFloats {
+		a[i] = QuantizeFloat32(v)
+	}
 	var c [VectorDimsPad]uint8
 	floats := []float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 1, 0, 1, 0.7, 0.95, 0, 0}
 	for i, v := range floats {
@@ -51,7 +55,11 @@ func BenchmarkVPTreeKNN_100(b *testing.B) {
 
 	refs, _ := LoadReferencesJSON(absPath)
 	tree := BuildVPTree(refs)
-	query := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	queryFloats := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	var query [VectorDimsPad]uint8
+	for i, f := range queryFloats {
+		query[i] = QuantizeFloat32(f)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -63,7 +71,11 @@ func BenchmarkVPTreeKNN_100(b *testing.B) {
 func BenchmarkVPTreeKNN_10(b *testing.B) {
 	refs := smallReferenceDataset()
 	tree := BuildVPTree(refs)
-	query := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	queryFloats := [VectorDimsPad]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0, 1, 0, 0.3, 0.05, 0, 0}
+	var query [VectorDimsPad]uint8
+	for i, f := range queryFloats {
+		query[i] = QuantizeFloat32(f)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

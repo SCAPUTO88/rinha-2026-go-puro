@@ -100,7 +100,12 @@ func (h *FraudHandler) handleFraudScore(w http.ResponseWriter, r *http.Request) 
 
 	vec := Vectorize(req)
 
-	knnRes := h.tree.KNN(&vec, 5)
+	var qVec [VectorDimsPad]uint8
+	for i := 0; i < VectorDims; i++ {
+		qVec[i] = QuantizeFloat32(vec[i])
+	}
+
+	knnRes := h.tree.KNN(&qVec, 5)
 	score := ComputeFraudScore(knnRes)
 
 	// Converte score para índice [0-5]

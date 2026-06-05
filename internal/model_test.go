@@ -236,8 +236,8 @@ func TestReferenceLabels(t *testing.T) {
 	// 14 real dims + 2 padding zeros
 	var v [VectorDimsPad]uint8
 	rawFloats := []float32{0.01, 0.0833, 0.05, 0.8261, 0.1667, -1, -1, 0.0432, 0.25, 0, 1, 0, 0.2, 0.0416, 0, 0}
-	for i, f := range rawFloats {
-		v[i] = QuantizeFloat32(f)
+	for i := 0; i < VectorDims; i++ {
+		v[i] = QuantizeFloat32(rawFloats[i])
 	}
 	ref := Reference{
 		Vector: v,

@@ -46,7 +46,11 @@ func TestSerializeDeserialize_SmallDataset(t *testing.T) {
 	}
 
 	// Verify query results match
-	query := [VectorDimsPad]float32{0.0041, 0.1667, 0.05, 0.7826, 0.3333, -1, -1, 0.0292, 0.15, 0, 1, 0, 0.15, 0.006, 0, 0}
+	queryFloats := [VectorDimsPad]float32{0.0041, 0.1667, 0.05, 0.7826, 0.3333, -1, -1, 0.0292, 0.15, 0, 1, 0, 0.15, 0.006, 0, 0}
+	var query [VectorDimsPad]uint8
+	for i, f := range queryFloats {
+		query[i] = QuantizeFloat32(f)
+	}
 	origNeighbors := tree.KNN(&query, 5)
 	loadedNeighbors := loaded.KNN(&query, 5)
 
@@ -106,7 +110,11 @@ func TestSerializeDeserialize_ExampleDataset(t *testing.T) {
 		Merchant:    Merchant{ID: "MERC-016", MCC: "5411", AvgAmount: 60.25},
 		Terminal:    Terminal{IsOnline: false, CardPresent: true, KmFromHome: 29.2331036248},
 	})
-	nLegit := loaded.KNN(&vecLegit, 5)
+	var qLegit [VectorDimsPad]uint8
+	for i, f := range vecLegit {
+		qLegit[i] = QuantizeFloat32(f)
+	}
+	nLegit := loaded.KNN(&qLegit, 5)
 	scoreLegit := ComputeFraudScore(nLegit)
 	if !IsApproved(scoreLegit) {
 		t.Errorf("legit tx should be approved via loaded tree, got score=%.1f", scoreLegit)
@@ -120,7 +128,11 @@ func TestSerializeDeserialize_ExampleDataset(t *testing.T) {
 		Merchant:    Merchant{ID: "MERC-068", MCC: "7802", AvgAmount: 54.86},
 		Terminal:    Terminal{IsOnline: false, CardPresent: true, KmFromHome: 952.2745933273},
 	})
-	nFraud := loaded.KNN(&vecFraud, 5)
+	var qFraud [VectorDimsPad]uint8
+	for i, f := range vecFraud {
+		qFraud[i] = QuantizeFloat32(f)
+	}
+	nFraud := loaded.KNN(&qFraud, 5)
 	scoreFraud := ComputeFraudScore(nFraud)
 	if IsApproved(scoreFraud) {
 		t.Errorf("fraud tx should be denied via loaded tree, got score=%.1f", scoreFraud)

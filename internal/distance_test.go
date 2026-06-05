@@ -7,8 +7,8 @@ import (
 
 func quantizeArray(arr [VectorDimsPad]float32) [VectorDimsPad]uint8 {
 	var res [VectorDimsPad]uint8
-	for i, v := range arr {
-		res[i] = QuantizeFloat32(v)
+	for i := 0; i < VectorDims; i++ {
+		res[i] = QuantizeFloat32(arr[i])
 	}
 	return res
 }
@@ -16,25 +16,22 @@ func quantizeArray(arr [VectorDimsPad]float32) [VectorDimsPad]uint8 {
 func TestEuclideanDistSq_IdenticalVectors(t *testing.T) {
 	a := [VectorDimsPad]float32{0.5, 0.3, 0.1, 0.8, 0.2, 0.4, 0.6, 0.7, 0.9, 1, 0, 1, 0.5, 0.3, 0, 0}
 	aq := quantizeArray(a)
-	
-	var query [VectorDimsPad]float32
-	for i, v := range aq {
-		query[i] = DequantizeToFloat32(v)
-	}
 
-	got := EuclideanDistSq(&query, &aq)
+	got := EuclideanDistSq(&aq, &aq)
 	if got != 0 {
-		t.Errorf("EuclideanDistSq(query, aq) = %v, want 0", got)
+		t.Errorf("EuclideanDistSq(aq, aq) = %v, want 0", got)
 	}
 }
 
 func TestEuclideanDistSq_KnownDistance(t *testing.T) {
 	a := [VectorDimsPad]float32{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	b := [VectorDimsPad]float32{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	aq := quantizeArray(a)
 	bq := quantizeArray(b)
-	got := EuclideanDistSq(&a, &bq)
-	if math.Abs(float64(got)-2.0) > 1e-3 {
-		t.Errorf("EuclideanDistSq = %v, want 2.0", got)
+	got := EuclideanDistSq(&aq, &bq)
+	realDistSq := float32(got) * 0.000064
+	if math.Abs(float64(realDistSq)-2.0) > 2e-2 {
+		t.Errorf("EuclideanDistSq = %v (real: %v), want 2.0", got, realDistSq)
 	}
 }
 
@@ -45,22 +42,20 @@ func TestEuclideanDistSq_AllDimensions(t *testing.T) {
 		a[i] = 0.5
 		b[i] = 0.6
 	}
+	aq := quantizeArray(a)
 	bq := quantizeArray(b)
-	got := EuclideanDistSq(&a, &bq)
+	got := EuclideanDistSq(&aq, &bq)
+	realDistSq := float32(got) * 0.000064
 	want := float32(VectorDims) * 0.01 // 14 * 0.01 = 0.14
-	if math.Abs(float64(got-want)) > 1e-4 {
-		t.Errorf("EuclideanDistSq = %v, want %v", got, want)
+	if math.Abs(float64(realDistSq-want)) > 2e-2 {
+		t.Errorf("EuclideanDistSq = %v (real: %v), want %v", got, realDistSq, want)
 	}
 }
 
 func TestEuclideanDistSq_PaddingIgnored(t *testing.T) {
 	a := [VectorDimsPad]float32{0.5, 0.3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	bq := quantizeArray(a)
-	var query [VectorDimsPad]float32
-	for i, v := range bq {
-		query[i] = DequantizeToFloat32(v)
-	}
-	got := EuclideanDistSq(&query, &bq)
+	got := EuclideanDistSq(&bq, &bq)
 	if got != 0 {
 		t.Errorf("EuclideanDistSq with zeroed padding = %v, want 0", got)
 	}
@@ -69,22 +64,20 @@ func TestEuclideanDistSq_PaddingIgnored(t *testing.T) {
 func TestEuclideanDistSq_WithSentinelMinus1(t *testing.T) {
 	a := [VectorDimsPad]float32{0.5, 0.3, 0.1, 0.8, 0.2, -1, -1, 0.7, 0.9, 1, 0, 1, 0.5, 0.3, 0, 0}
 	aq := quantizeArray(a)
-	var query [VectorDimsPad]float32
-	for i, v := range aq {
-		query[i] = DequantizeToFloat32(v)
-	}
-	got := EuclideanDistSq(&query, &aq)
+	got := EuclideanDistSq(&aq, &aq)
 	if got != 0 {
 		t.Errorf("EuclideanDistSq with matching sentinels = %v, want 0", got)
 	}
 
 	c := [VectorDimsPad]float32{0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	d := [VectorDimsPad]float32{0, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	cq := quantizeArray(c)
 	dq := quantizeArray(d)
-	got2 := EuclideanDistSq(&c, &dq)
+	got2 := EuclideanDistSq(&cq, &dq)
+	realDistSq := float32(got2) * 0.000064
 	want := float32(2.25) // (-1 - 0.5)² = 2.25
-	if math.Abs(float64(got2-want)) > 1e-4 {
-		t.Errorf("EuclideanDistSq sentinel vs value = %v, want %v", got2, want)
+	if math.Abs(float64(realDistSq-want)) > 2e-2 {
+		t.Errorf("EuclideanDistSq sentinel vs value = %v (real: %v), want %v", got2, realDistSq, want)
 	}
 }
 
@@ -93,9 +86,9 @@ func TestEuclideanDistSq_Symmetry(t *testing.T) {
 	b := [VectorDimsPad]float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0, 1, 1, 0.3, 0.9, 0, 0}
 	aq := quantizeArray(a)
 	bq := quantizeArray(b)
-	ab := EuclideanDistSqRefRef(&aq, &bq)
-	ba := EuclideanDistSqRefRef(&bq, &aq)
+	ab := EuclideanDistSq(&aq, &bq)
+	ba := EuclideanDistSq(&bq, &aq)
 	if ab != ba {
-		t.Errorf("EuclideanDistSqRefRef not symmetric: ab=%v, ba=%v", ab, ba)
+		t.Errorf("EuclideanDistSq not symmetric: ab=%v, ba=%v", ab, ba)
 	}
 }
