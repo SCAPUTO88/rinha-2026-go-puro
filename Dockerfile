@@ -47,10 +47,10 @@ ENV PORT=8080
 ENV VPTREE_BIN=/data/vptree.bin
 
 # Performance tuning:
-# GOGC=200: GC roda quando heap dobra, reduz frequência sem acumular memória indefinidamente.
-# GOMAXPROCS não é definido: o runtime usa o número de CPUs disponíveis automaticamente.
-# GOMEMLIMIT limita o heap do Go, mas a mmap do vptree.bin não conta nesse limite.
-ENV GOGC=200
+# GOGC=off: desabilita GC automático — o hot path não aloca heap significativo
+#   (pools reciclam tudo). GOMEMLIMIT é a rede de segurança contra OOM.
+# GOMAXPROCS não é definido aqui — é controlado via docker-compose por instância.
+ENV GOGC=off
 ENV GOMEMLIMIT=120MiB
 
 EXPOSE 8080

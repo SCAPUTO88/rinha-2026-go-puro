@@ -59,8 +59,34 @@ func BuildVPTree(refs []Reference) *VPTree {
 	rng := rand.New(rand.NewSource(42)) // Deterministic for reproducibility
 	tree.Root = tree.buildRecursive(indices, rng)
 
+	// Reordenar vetores e labels para ordem DFS da árvore.
+	// Isso transforma acessos aleatórios em acessos sequenciais durante a busca,
+	// trocando cache misses de DRAM (~100ns) por L3 cache hits (~5ns) — speedup ~20×.
+	tree.reorderForCacheLocality()
+
 	return tree
 }
+
+// reorderForCacheLocality reorganiza os arrays de vetores e labels para
+// coincidir com a ordem DFS dos nós da árvore. Após esta operação,
+// Nodes[i].VPIdx == i, e a busca na árvore acessa vetores sequencialmente.
+func (t *VPTree) reorderForCacheLocality() {
+	n := len(t.Nodes)
+	if n == 0 {
+		return
+	}
+	newVectors := make([][VectorDimsPad]uint8, n)
+	newLabels := make([]uint8, n)
+	for i := range t.Nodes {
+		vpIdx := t.Nodes[i].VPIdx
+		newVectors[i] = t.Vectors[vpIdx]
+		newLabels[i] = t.Labels[vpIdx]
+		t.Nodes[i].VPIdx = int32(i) // identidade: VPIdx == node index
+	}
+	t.Vectors = newVectors
+	t.Labels = newLabels
+}
+
 
 // buildRecursive cria os nós da árvore recursivamente.
 func (t *VPTree) buildRecursive(indices []int, rng *rand.Rand) int32 {
@@ -203,10 +229,12 @@ type KNNResult struct {
 }
 
 // maxNodesToVisit limita o número de nós visitados durante a busca VP-Tree.
-// Isso garante latência máxima controlada em espaços de alta dimensionalidade
-// onde o pruning pode ser fraco. 3000 nós dá excelente precisão na prática
-// para dados de fraude em 14 dimensões com 3M referências.
-const maxNodesToVisit = 3000
+// Com vetores reordenados em ordem DFS (cache-friendly), cada visita custa ~5ns
+// (L3 cache hit) em vez de ~100ns (DRAM random). Com 50.000 visitas:
+//   - Custo: 50000 × 5ns = 250μs por query (cache-warm)
+//   - Cobertura: 50K / 3M = 1.67% do dataset → precisão próxima do KNN exato
+//   - Working set: 50K × 32 bytes (nós+vetores) = 1.6MB → cabe no L3 (3MB)
+const maxNodesToVisit = 50000
 
 // KNN encontra os k-vizinhos mais próximos aplicando poda por desigualdade triangular de forma zero-alloc.
 func (t *VPTree) KNN(query *[VectorDimsPad]uint8, k int) KNNResult {
