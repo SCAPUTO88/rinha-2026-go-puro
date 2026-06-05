@@ -19,43 +19,43 @@ services:
       - rinha
 
   api1:
-    image: scaputo88/rinha-2026-go:v2
+    image: scaputo88/rinha-2026-go:v3
     pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
-    restart: always
+    restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
-      interval: 3s
-      timeout: 1s
-      retries: 3
-      start_period: 3s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 90s
     deploy:
       resources:
         limits:
-          cpus: "0.44"
+          cpus: "0.45"
           memory: "170M"
     networks:
       - rinha
 
   api2:
-    image: scaputo88/rinha-2026-go:v2
+    image: scaputo88/rinha-2026-go:v3
     pull_policy: always
     environment:
       - PORT=8080
       - VPTREE_BIN=/data/vptree.bin
-    restart: always
+    restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
-      interval: 3s
-      timeout: 1s
-      retries: 3
-      start_period: 3s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 90s
     deploy:
       resources:
         limits:
-          cpus: "0.44"
+          cpus: "0.45"
           memory: "170M"
     networks:
       - rinha

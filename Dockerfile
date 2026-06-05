@@ -46,10 +46,12 @@ COPY --from=preprocessor /data/vptree.bin /data/vptree.bin
 ENV PORT=8080
 ENV VPTREE_BIN=/data/vptree.bin
 
-# Performance tuning
-ENV GOGC=off
-ENV GOMAXPROCS=1
-ENV GOMEMLIMIT=150MiB
+# Performance tuning:
+# GOGC=200: GC roda quando heap dobra, reduz frequência sem acumular memória indefinidamente.
+# GOMAXPROCS não é definido: o runtime usa o número de CPUs disponíveis automaticamente.
+# GOMEMLIMIT limita o heap do Go, mas a mmap do vptree.bin não conta nesse limite.
+ENV GOGC=200
+ENV GOMEMLIMIT=120MiB
 
 EXPOSE 8080
 
