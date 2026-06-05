@@ -19,7 +19,7 @@ services:
       - rinha
 
   api1:
-    image: scaputo88/rinha-2026-go:v4
+    image: scaputo88/rinha-2026-go:v7
     pull_policy: always
     environment:
       - PORT=8080
@@ -41,7 +41,7 @@ services:
       - rinha
 
   api2:
-    image: scaputo88/rinha-2026-go:v4
+    image: scaputo88/rinha-2026-go:v7
     pull_policy: always
     environment:
       - PORT=8080
