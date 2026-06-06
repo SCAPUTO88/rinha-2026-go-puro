@@ -5,6 +5,7 @@ services:
       - "9999:9999"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - sockets:/sockets
     depends_on:
       api1:
         condition: service_healthy
@@ -13,18 +14,20 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.10"
+          cpus: "0.04"
           memory: "10M"
     networks:
       - rinha
 
   api1:
-    image: scaputo88/rinha-2026-go:v7
+    image: scaputo88/rinha-2026-go:v10
     pull_policy: always
     environment:
-      - PORT=8080
-      - VPTREE_BIN=/data/vptree.bin
+      - REFS_BIN=/data/refs.bin
+      - SOCKET_PATH=/sockets/api1.sock
       - GOMAXPROCS=1
+    volumes:
+      - sockets:/sockets
     restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
@@ -35,18 +38,20 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
+          cpus: "0.48"
           memory: "170M"
     networks:
       - rinha
 
   api2:
-    image: scaputo88/rinha-2026-go:v7
+    image: scaputo88/rinha-2026-go:v10
     pull_policy: always
     environment:
-      - PORT=8080
-      - VPTREE_BIN=/data/vptree.bin
+      - REFS_BIN=/data/refs.bin
+      - SOCKET_PATH=/sockets/api2.sock
       - GOMAXPROCS=1
+    volumes:
+      - sockets:/sockets
     restart: on-failure
     healthcheck:
       test: ["CMD", "/api", "--health"]
@@ -57,10 +62,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
+          cpus: "0.48"
           memory: "170M"
     networks:
       - rinha
+
+volumes:
+  sockets:
 
 networks:
   rinha:

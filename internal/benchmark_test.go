@@ -94,9 +94,8 @@ func BenchmarkFullPipeline(b *testing.B) {
 		b.Skip("example references not found")
 	}
 
-	refs, _ := LoadReferencesJSON(absPath)
-	tree := BuildVPTree(refs)
-	handler := NewFraudHandler(tree)
+	ds, _ := LoadReferencesAsBFDataset(absPath)
+	handler := NewFraudHandler(ds)
 	mux := handler.RegisterRoutes()
 
 	payload := `{"id":"tx-bench","transaction":{"amount":41.12,"installments":2,"requested_at":"2026-03-11T18:45:53Z"},"customer":{"avg_amount":82.24,"tx_count_24h":3,"known_merchants":["MERC-003","MERC-016"]},"merchant":{"id":"MERC-016","mcc":"5411","avg_amount":60.25},"terminal":{"is_online":false,"card_present":true,"km_from_home":29.2331036248},"last_transaction":null}`
@@ -119,9 +118,8 @@ func BenchmarkFullPipeline_Allocs(b *testing.B) {
 		b.Skip("example references not found")
 	}
 
-	refs, _ := LoadReferencesJSON(absPath)
-	tree := BuildVPTree(refs)
-	handler := NewFraudHandler(tree)
+	ds, _ := LoadReferencesAsBFDataset(absPath)
+	handler := NewFraudHandler(ds)
 	mux := handler.RegisterRoutes()
 
 	payload := `{"id":"tx-bench","transaction":{"amount":41.12,"installments":2,"requested_at":"2026-03-11T18:45:53Z"},"customer":{"avg_amount":82.24,"tx_count_24h":3,"known_merchants":["MERC-003","MERC-016"]},"merchant":{"id":"MERC-016","mcc":"5411","avg_amount":60.25},"terminal":{"is_online":false,"card_present":true,"km_from_home":29.2331036248},"last_transaction":null}`

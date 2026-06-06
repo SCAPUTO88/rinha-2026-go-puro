@@ -11,9 +11,8 @@ import (
 // newTestHandler creates a handler backed by a small VP-Tree for testing.
 func newTestHandler(t *testing.T) *FraudHandler {
 	t.Helper()
-	refs := smallReferenceDataset() // 10 vectors
-	tree := BuildVPTree(refs)
-	return NewFraudHandler(tree)
+	ds := smallBFDataset()
+	return NewFraudHandler(ds)
 }
 
 func TestReadyHandler_Returns200(t *testing.T) {

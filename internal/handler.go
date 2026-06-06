@@ -36,24 +36,16 @@ var (
 			return &FraudRequest{}
 		},
 	}
-
-	// Pool para os vizinhos (KNN)
-	neighborPool = sync.Pool{
-		New: func() interface{} {
-			s := make([]Neighbor, 0, 5)
-			return &s
-		},
-	}
 )
 
-// FraudHandler processa as requisições da API.
+// FraudHandler processa as requisições da API usando brute-force KNN.
 type FraudHandler struct {
-	tree *VPTree
+	ds *BFDataset
 }
 
-// NewFraudHandler creates a new handler backed by the given VP-Tree.
-func NewFraudHandler(tree *VPTree) *FraudHandler {
-	return &FraudHandler{tree: tree}
+// NewFraudHandler creates a new handler backed by the given BFDataset.
+func NewFraudHandler(ds *BFDataset) *FraudHandler {
+	return &FraudHandler{ds: ds}
 }
 
 // RegisterRoutes cria o roteador HTTP.
@@ -99,17 +91,11 @@ func (h *FraudHandler) handleFraudScore(w http.ResponseWriter, r *http.Request) 
 	}
 
 	vec := Vectorize(req)
+	queryI16 := QuantizeVecToInt16(vec)
+	fraudCount := BruteForceKNN5(&queryI16, h.ds)
 
-	var qVec [VectorDimsPad]uint8
-	for i := 0; i < VectorDims; i++ {
-		qVec[i] = QuantizeFloat32(vec[i])
-	}
-
-	knnRes := h.tree.KNN(&qVec, 5)
-	score := ComputeFraudScore(knnRes)
-
-	// Converte score para índice [0-5]
-	idx := int(score*5 + 0.5) // Round to nearest integer
+	// fraudCount is directly the index into responseTemplates [0-5]
+	idx := fraudCount
 	if idx < 0 {
 		idx = 0
 	}
